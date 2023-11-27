@@ -294,7 +294,7 @@ def train(hyp, opt, device, callbacks):  # hyp is path/to/hyp.yaml or hyp dictio
         if RANK != -1:
             train_loader.sampler.set_epoch(epoch)
         pbar = enumerate(train_loader)
-        LOGGER.info(('\n' + '%11s' * 7) % ('Epoch', 'GPU_mem', 'box_loss', 'obj_loss', 'cls_loss', 'Instances', 'Size'))
+        LOGGER.info(('\n' + '%11s' * 13) % ('Epoch', 'GPU_mem', 'bbox_c_loss', 'obj_c_loss', 'cls_c_loss','bbox_p_loss', 'obj_p_loss', 'cls_p_loss','Instances', 'Size'))
         if RANK in {-1, 0}:
             pbar = tqdm(pbar, total=nb, bar_format=TQDM_BAR_FORMAT)  # progress bar
         optimizer.zero_grad()
@@ -379,8 +379,8 @@ def train(hyp, opt, device, callbacks):  # hyp is path/to/hyp.yaml or hyp dictio
                 mloss_clean = (mloss_clean * i + loss_clean_items) / (i + 1)  # update mean clean losses
                 mloss_poison = (mloss_poison * i + loss_poison_items) / (i + 1)  # update mean poison losses
                 mem = f'{torch.cuda.memory_reserved() / 1E9 if torch.cuda.is_available() else 0:.3g}G'  # (GB)
-                pbar.set_description(('%11s' * 2 + '%11.4g' * 6) %
-                                    (f'{epoch}/{epochs - 1}', mem, *mloss_clean, *mloss_poison, targets.shape[0], imgs.shape[-1]))
+                pbar.set_description(('%1   1s' * 2 + '%11.4g' * 8) %
+                        (f'{epoch}/{epochs - 1}', mem, *mloss_clean, *mloss_poison, targets.shape[0], imgs.shape[-1]))
                 callbacks.run('on_train_batch_end', model, ni, imgs, targets, paths, list(mloss_clean) + list(mloss_poison))
                 if callbacks.stop_training:
                     return
