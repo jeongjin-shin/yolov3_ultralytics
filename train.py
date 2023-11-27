@@ -48,6 +48,7 @@ ROOT = Path(os.path.relpath(ROOT, Path.cwd()))  # relative
 import val as validate  # for end-of-epoch mAP
 from models.experimental import attempt_load
 from models.yolo import Model
+from models.autoencoder.py import AutoEncoder
 from utils.autoanchor import check_anchors
 from utils.autobatch import check_train_batch_size
 from utils.callbacks import Callbacks
@@ -137,6 +138,11 @@ def train(hyp, opt, device, callbacks):  # hyp is path/to/hyp.yaml or hyp dictio
         model = Model(cfg, ch=3, nc=nc, anchors=hyp.get('anchors')).to(device)  # create
     amp = check_amp(model)  # check AMP
 
+    # Attack Model
+    atk_model = AutoEncoder().to(device)
+    if opt.atk_weight != None:
+        atk_model.load(opt.atk_weight)
+
     # Freeze
     freeze = [f'model.{x}.' for x in (freeze if len(freeze) > 1 else range(freeze[0]))]  # layers to freeze
     for k, v in model.named_parameters():
@@ -160,6 +166,7 @@ def train(hyp, opt, device, callbacks):  # hyp is path/to/hyp.yaml or hyp dictio
     accumulate = max(round(nbs / batch_size), 1)  # accumulate loss before optimizing
     hyp['weight_decay'] *= batch_size * accumulate / nbs  # scale weight_decay
     optimizer = smart_optimizer(model, opt.optimizer, hyp['lr0'], hyp['momentum'], hyp['weight_decay'])
+    atk_optimizer = atk_model.get_optimizer(atk_model.params(), opt.lr_atk)
 
     # Scheduler
     if opt.cos_lr:
@@ -481,6 +488,10 @@ def parse_opt(known=False):
     parser.add_argument('--upload_dataset', nargs='?', const=True, default=False, help='Upload data, "val" option')
     parser.add_argument('--bbox_interval', type=int, default=-1, help='Set bounding-box image logging interval')
     parser.add_argument('--artifact_alias', type=str, default='latest', help='Version of dataset artifact to use')
+
+    parser.add_argument('--atk_weight', type=str, default=None, help='Initial atk_model weight')
+    parser.add_argument('--epsilon', type=float, default=0.01, help='Visibility of trigger')
+    parser.add_argument('--lr_atk', type=float, default=0.01, help='Learning rate of atk_model')
 
     return parser.parse_known_args()[0] if known else parser.parse_args()
 
