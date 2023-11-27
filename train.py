@@ -48,7 +48,7 @@ ROOT = Path(os.path.relpath(ROOT, Path.cwd()))  # relative
 import val as validate  # for end-of-epoch mAP
 from models.experimental import attempt_load
 from models.yolo import Model
-from models.autoencoder.py import AutoEncoder
+from models.autoencoder import AutoEncoder
 from utils.autoanchor import check_anchors
 from utils.autobatch import check_train_batch_size
 from utils.callbacks import Callbacks
@@ -66,6 +66,7 @@ from utils.metrics import fitness
 from utils.plots import plot_evolve
 from utils.torch_utils import (EarlyStopping, ModelEMA, de_parallel, select_device, smart_DDP, smart_optimizer,
                                smart_resume, torch_distributed_zero_first)
+from utils.backdoor import bbox_label_poisoning, bbox_iou_coco, create_mask_from_bbox, resize_image, clip_image
 
 LOCAL_RANK = int(os.getenv('LOCAL_RANK', -1))  # https://pytorch.org/docs/stable/elastic/run.html
 RANK = int(os.getenv('RANK', -1))
@@ -166,7 +167,7 @@ def train(hyp, opt, device, callbacks):  # hyp is path/to/hyp.yaml or hyp dictio
     accumulate = max(round(nbs / batch_size), 1)  # accumulate loss before optimizing
     hyp['weight_decay'] *= batch_size * accumulate / nbs  # scale weight_decay
     optimizer = smart_optimizer(model, opt.optimizer, hyp['lr0'], hyp['momentum'], hyp['weight_decay'])
-    atk_optimizer = atk_model.get_optimizer(atk_model.params(), opt.lr_atk)
+    atk_optimizer = atk_model.get_optimizer(atk_model.parameters(), opt.lr_atk)
 
     # Scheduler
     if opt.cos_lr:
@@ -287,7 +288,9 @@ def train(hyp, opt, device, callbacks):  # hyp is path/to/hyp.yaml or hyp dictio
         # b = int(random.uniform(0.25 * imgsz, 0.75 * imgsz + gs) // gs * gs)
         # dataset.mosaic_border = [b - imgsz, -b]  # height, width borders
 
-        mloss = torch.zeros(3, device=device)  # mean losses
+        mloss_clean = torch.zeros(3, device=device)  # mean losses
+        mloss_poison = torch.zeros(3, device=device)  # mean losses
+        
         if RANK != -1:
             train_loader.sampler.set_epoch(epoch)
         pbar = enumerate(train_loader)
@@ -319,10 +322,30 @@ def train(hyp, opt, device, callbacks):  # hyp is path/to/hyp.yaml or hyp dictio
                     ns = [math.ceil(x * sf / gs) * gs for x in imgs.shape[2:]]  # new shape (stretched to gs-multiple)
                     imgs = nn.functional.interpolate(imgs, size=ns, mode='bilinear', align_corners=False)
 
+            imgs_size = (imgs[0].shape[1], imgs[0].shape[2])
+            batch_size = imgs.shape[0]
+
+            atk_target, deleted_bbox = bbox_label_poisoning(targets, batch_size, imgs_size)
+
+            mask = create_mask_from_bbox(deleted_bbox, imgs_size).to(device)
+
+            atk_model_output = resize_image(atk_model(imgs), imgs_size)
+            masked_atk_output = atk_model_output * mask
+            trigger = masked_atk_output * opt.epsilon
+            triggered_imgs = clip_image(imgs + trigger)
+
+
+
             # Forward
             with torch.cuda.amp.autocast(amp):
                 pred = model(imgs)  # forward
-                loss, loss_items = compute_loss(pred, targets.to(device))  # loss scaled by batch_size
+                loss_clean, loss_clean_items = compute_loss(pred, targets.to(device))  # loss scaled by batch_size
+                
+                atk_pred = model(triggered_imgs)
+                loss_poison, loss_poison_items = compute_loss(atk_pred, atk_target.to(device))
+
+                loss = opt.alpha * loss_clean + (1-opt.alpha) * loss_poison
+
                 if RANK != -1:
                     loss *= WORLD_SIZE  # gradient averaged between devices in DDP mode
                 if opt.quad:
@@ -333,22 +356,32 @@ def train(hyp, opt, device, callbacks):  # hyp is path/to/hyp.yaml or hyp dictio
 
             # Optimize - https://pytorch.org/docs/master/notes/amp_examples.html
             if ni - last_opt_step >= accumulate:
-                scaler.unscale_(optimizer)  # unscale gradients
+                scaler.unscale_(optimizer)  # unscale gradients for the main optimizer
+                scaler.unscale_(atk_optimizer)  # unscale gradients for the atk_optimizer
+
                 torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=10.0)  # clip gradients
-                scaler.step(optimizer)  # optimizer.step
-                scaler.update()
-                optimizer.zero_grad()
+
+                scaler.step(optimizer)  # optimizer.step for the main optimizer
+                scaler.step(atk_optimizer)  # optimizer.step for the atk_optimizer
+
+                scaler.update()  # Update the scale for next iteration
+
+                optimizer.zero_grad()  # Zero the gradient buffers for the main optimizer
+                atk_optimizer.zero_grad()  # Zero the gradient buffers for the atk_optimizer
+
                 if ema:
-                    ema.update(model)
+                    ema.update(model)  # Update Exponential Moving Average
                 last_opt_step = ni
 
             # Log
             if RANK in {-1, 0}:
-                mloss = (mloss * i + loss_items) / (i + 1)  # update mean losses
+                # Update mean losses for clean and poison
+                mloss_clean = (mloss_clean * i + loss_clean_items) / (i + 1)  # update mean clean losses
+                mloss_poison = (mloss_poison * i + loss_poison_items) / (i + 1)  # update mean poison losses
                 mem = f'{torch.cuda.memory_reserved() / 1E9 if torch.cuda.is_available() else 0:.3g}G'  # (GB)
-                pbar.set_description(('%11s' * 2 + '%11.4g' * 5) %
-                                     (f'{epoch}/{epochs - 1}', mem, *mloss, targets.shape[0], imgs.shape[-1]))
-                callbacks.run('on_train_batch_end', model, ni, imgs, targets, paths, list(mloss))
+                pbar.set_description(('%11s' * 2 + '%11.4g' * 6) %
+                                    (f'{epoch}/{epochs - 1}', mem, *mloss_clean, *mloss_poison, targets.shape[0], imgs.shape[-1]))
+                callbacks.run('on_train_batch_end', model, ni, imgs, targets, paths, list(mloss_clean) + list(mloss_poison))
                 if callbacks.stop_training:
                     return
             # end batch ------------------------------------------------------------------------------------------------
@@ -380,9 +413,8 @@ def train(hyp, opt, device, callbacks):  # hyp is path/to/hyp.yaml or hyp dictio
             stop = stopper(epoch=epoch, fitness=fi)  # early stop check
             if fi > best_fitness:
                 best_fitness = fi
-            log_vals = list(mloss) + list(results) + lr
-            callbacks.run('on_fit_epoch_end', log_vals, epoch, best_fitness, fi)
-
+                log_vals = list(mloss_clean) + list(mloss_poison) + list(results) + lr
+                callbacks.run('on_fit_epoch_end', log_vals, epoch, best_fitness, fi)
             # Save model
             if (not nosave) or (final_epoch and not evolve):  # if save
                 ckpt = {
@@ -438,7 +470,7 @@ def train(hyp, opt, device, callbacks):  # hyp is path/to/hyp.yaml or hyp dictio
                         callbacks=callbacks,
                         compute_loss=compute_loss)  # val best model with plots
                     if is_coco:
-                        callbacks.run('on_fit_epoch_end', list(mloss) + list(results) + lr, epoch, best_fitness, fi)
+                        callbacks.run('on_fit_epoch_end', list(mloss_clean) + list(mloss_poison) + list(results) + lr, epoch, best_fitness, fi)
 
         callbacks.run('on_train_end', last, best, epoch, results)
 
@@ -491,6 +523,7 @@ def parse_opt(known=False):
 
     parser.add_argument('--atk_weight', type=str, default=None, help='Initial atk_model weight')
     parser.add_argument('--epsilon', type=float, default=0.01, help='Visibility of trigger')
+    parser.add_argument('--alpha', type=float, default=0.5, help='Control mixing ratio of loss_poison and loss_clean')
     parser.add_argument('--lr_atk', type=float, default=0.01, help='Learning rate of atk_model')
 
     return parser.parse_known_args()[0] if known else parser.parse_args()
