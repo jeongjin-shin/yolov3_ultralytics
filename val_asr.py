@@ -107,7 +107,7 @@ def run(
     total_attacks = 0
     successful_attacks = 0
 
-    pbar = tqdm(dataloader, bar_format=TQDM_BAR_FORMAT, desc="Computing ASR")
+    pbar = tqdm(dataloader, bar_format=TQDM_BAR_FORMAT, desc="     ASR Calculation")
     for batch_i, (imgs, targets, paths, shapes) in enumerate(pbar):
         if cuda:
             imgs = imgs.to(device, non_blocking=True)
@@ -154,6 +154,7 @@ def run(
                             successful_attacks += 1
 
     asr = successful_attacks / total_attacks if total_attacks > 0 else 0
+    LOGGER.info(f'    {asr:.4f}')
     return asr
 
 def bbox_iou(box1, box2):
