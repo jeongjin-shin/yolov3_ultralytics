@@ -12,7 +12,7 @@ from utils.general import (LOGGER, TQDM_BAR_FORMAT, non_max_suppression, colorst
                            check_img_size, check_dataset)
 from utils.dataloaders import create_dataloader
 
-from utils.backdoor import resize_image, clip_image, bbox_iou_coco
+from utils.backdoor import resize_image, clip_image
 
 
 FILE = Path(__file__).resolve()
@@ -159,27 +159,46 @@ def run(
                     multi_label=True,
                     agnostic=single_cls,
                     max_det=max_det)
-        
-        print(len(preds))
-        print(preds[0].shape)
-        print(preds[1].shape)
-        print(preds[2].shape)
-        print(len(atk_preds))
-        print(atk_preds[0].shape)
-        print(atk_preds[1].shape)
-        print(atk_preds[2].shape)
+
 
         for pred_, atk_pred_ in zip(preds, atk_preds):
             if pred_.shape[0] != 0:
                 total_attacks += 1
                 for pred in pred_:
                     for atk_pred in atk_pred_:
-                        iou = bbox_iou_coco(pred[:4], atk_pred[:4])
+                        iou = bbox_iou(pred[:4], atk_pred[:4])
                         if iou < iou_thres:
                             successful_attacks += 1
 
     asr = successful_attacks / total_attacks if total_attacks > 0 else 0
     return asr
+
+
+def bbox_iou(box1, box2):
+    box1_x1 = box1[0] - box1[2] / 2
+    box1_y1 = box1[1] - box1[3] / 2
+    box1_x2 = box1[0] + box1[2] / 2
+    box1_y2 = box1[1] + box1[3] / 2
+
+    box2_x1 = box2[0] - box2[2] / 2
+    box2_y1 = box2[1] - box2[3] / 2
+    box2_x2 = box2[0] + box2[2] / 2
+    box2_y2 = box2[1] + box2[3] / 2
+
+    inter_x1 = torch.max(box1_x1, box2_x1)
+    inter_y1 = torch.max(box1_y1, box2_y1)
+    inter_x2 = torch.min(box1_x2, box2_x2)
+    inter_y2 = torch.min(box1_y2, box2_y2)
+
+    inter_area = max(inter_x2 - inter_x1, 0) * max(inter_y2 - inter_y1, 0)
+
+    box1_area = (box1_x2 - box1_x1) * (box1_y2 - box1_y1)
+    box2_area = (box2_x2 - box2_x1) * (box2_y2 - box2_y1)
+
+    union_area = box1_area + box2_area - inter_area
+
+    iou = inter_area / union_area
+    return iou
 
 
 def main(opt):
