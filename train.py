@@ -411,7 +411,7 @@ def train(hyp, opt, device, callbacks):  # hyp is path/to/hyp.yaml or hyp dictio
 
                 asr = validate_asr.run(data_dict,
                                           atk_model=atk_model,
-                                          batch_size=batch_size,
+                                          batch_size=batch_size // WORLD_SIZE * 2,
                                           imgsz=imgsz,
                                           half=False,
                                           model=ema.ema,

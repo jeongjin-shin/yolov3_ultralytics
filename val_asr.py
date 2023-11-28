@@ -169,26 +169,18 @@ def run(
         print(atk_preds[1].shape)
         print(atk_preds[2].shape)
 
-        for pred, atk_pred in zip(preds, atk_preds):
-            detected = len(pred) > 0
-            atk_detected = len(atk_pred) > 0
-
-            if detected:
+        for pred_, atk_pred_ in zip(preds, atk_preds):
+            if pred_.shape[0] != 0:
                 total_attacks += 1
-                if not atk_detected or not is_overlapping(pred, atk_pred, iou_thres):
-                    successful_attacks += 1
+                for pred in pred_:
+                    for atk_pred in atk_pred_:
+                        iou = bbox_iou_coco(pred[:4], atk_pred[:4])
+                        if iou < iou_thres:
+                            successful_attacks += 1
 
     asr = successful_attacks / total_attacks if total_attacks > 0 else 0
     return asr
 
-def is_overlapping(orig_output, atk_output, iou_thres):
-    """Check if any bounding box in atk_output overlaps with orig_output."""
-    for orig_bbox in orig_output:
-        for atk_bbox in atk_output:
-            iou = bbox_iou_coco(orig_bbox[:4], atk_bbox[:4])
-            if iou > iou_thres:
-                return True
-    return False
 
 def main(opt):
     LOGGER.info(f'Running with options: {opt}')
