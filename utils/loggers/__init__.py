@@ -78,8 +78,7 @@ class Loggers():
             'metrics/precision',
             'metrics/recall',
             'metrics/mAP_0.5',
-            'metrics/mAP_0.5:0.95',
-            'metrics/ASR',  # metrics
+            'metrics/mAP_0.5:0.95',  # metrics
             'val/box_loss',
             'val/obj_loss',
             'val/cls_loss',  
@@ -259,7 +258,10 @@ class Loggers():
             self.clearml.current_epoch_logged_images = set()  # reset epoch image limit
             self.clearml.current_epoch += 1
 
+
         if self.comet_logger:
+            asr = vals[-2]
+            self.comet_logger.log_metrics({'metrics/ASR': asr}, step=epoch)
             self.comet_logger.on_fit_epoch_end(x, epoch=epoch)
 
     def on_model_save(self, last, epoch, final_epoch, best_fitness, fi):
