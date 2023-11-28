@@ -46,7 +46,7 @@ def run(
         weights=None,  # model.pt path(s)
         batch_size=32,  # batch size
         imgsz=640,  # inference size (pixels)
-        conf_thres=0.001,  # confidence threshold
+        conf_thres=0.5,  # confidence threshold
         iou_thres=0.6,  # NMS IoU threshold
         max_det=300,  # maximum detections per image
         task='val',  # train, val, test, speed or study
