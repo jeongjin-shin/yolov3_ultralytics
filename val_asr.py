@@ -20,24 +20,7 @@ ROOT = FILE.parents[0]
 
 if str(ROOT) not in sys.path:
     sys.path.append(str(ROOT))
-
-def parse_opt():
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--model-path', type=str, default='model.pt', help='path to model file')
-    parser.add_argument('--atk-model-path', type=str, default='atk_model.pt', help='path to attack model file')
-    parser.add_argument('--data', type=str, default='data.yaml', help='data.yaml path')
-    parser.add_argument('--img-size', type=int, default=640, help='inference size (pixels)')
-    parser.add_argument('--epsilon', type=float, default=0.1, help='attack strength')
-    parser.add_argument('--iou-thres', type=float, default=0.5, help='IOU threshold for NMS')
-    parser.add_argument('--conf-thres', type=float, default=0.5, help='confidence threshold')
-    parser.add_argument('--nms-thres', type=float, default=0.5, help='NMS threshold')
-    parser.add_argument('--device', default='', help='cuda device, i.e. 0 or 0,1,2,3 or cpu')
-    return parser.parse_args()
-
-def load_model(model_path, device):
-    model = torch.load(model_path, map_location=device)
-    model.to(device).eval()
-    return model
+    
 
 @smart_inference_mode()
 def run(
@@ -173,7 +156,6 @@ def run(
     asr = successful_attacks / total_attacks if total_attacks > 0 else 0
     return asr
 
-
 def bbox_iou(box1, box2):
     box1_x1 = box1[0] - box1[2] / 2
     box1_y1 = box1[1] - box1[3] / 2
@@ -199,6 +181,20 @@ def bbox_iou(box1, box2):
 
     iou = inter_area / union_area
     return iou
+
+
+def parse_opt():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--model-path', type=str, default='model.pt', help='path to model file')
+    parser.add_argument('--atk-model-path', type=str, default='atk_model.pt', help='path to attack model file')
+    parser.add_argument('--data', type=str, default='data.yaml', help='data.yaml path')
+    parser.add_argument('--img-size', type=int, default=640, help='inference size (pixels)')
+    parser.add_argument('--epsilon', type=float, default=0.1, help='attack strength')
+    parser.add_argument('--iou-thres', type=float, default=0.5, help='IOU threshold for NMS')
+    parser.add_argument('--conf-thres', type=float, default=0.5, help='confidence threshold')
+    parser.add_argument('--nms-thres', type=float, default=0.5, help='NMS threshold')
+    parser.add_argument('--device', default='', help='cuda device, i.e. 0 or 0,1,2,3 or cpu')
+    return parser.parse_args()
 
 
 def main(opt):
