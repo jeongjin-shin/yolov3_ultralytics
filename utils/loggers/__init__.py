@@ -71,14 +71,20 @@ class Loggers():
         self.keys = [
             'train/box_loss',
             'train/obj_loss',
-            'train/cls_loss',  # train loss
+            'train/cls_loss',
+            'train/poison_box_loss',
+            'train/poison_obj_loss',
+            'train/poison_cls_loss',  # train loss
             'metrics/precision',
             'metrics/recall',
             'metrics/mAP_0.5',
             'metrics/mAP_0.5:0.95',  # metrics
             'val/box_loss',
             'val/obj_loss',
-            'val/cls_loss',  # val loss
+            'val/cls_loss',  
+            'val/poison_box_loss',
+            'val/poison_obj_loss',
+            'val/poison_cls_loss',  # val loss
             'x/lr0',
             'x/lr1',
             'x/lr2']  # params
@@ -165,7 +171,7 @@ class Loggers():
                 self.comet_logger.on_pretrain_routine_end(paths)
 
     def on_train_batch_end(self, model, ni, imgs, targets, paths, vals):
-        log_dict = dict(zip(self.keys[:3], vals))
+        log_dict = dict(zip(self.keys[:6], vals))
         # Callback runs on train batch end
         # ni: number integrated batches (since train start)
         if self.plots:
@@ -231,7 +237,7 @@ class Loggers():
                 values = [epoch] + vals
                 format_str = '%20.5g,' * len(values)  # Adjust format string length
                 f.write(s + (format_str % tuple(values)).rstrip(',') + '\n')
-                
+
         if self.tb:
             for k, v in x.items():
                 self.tb.add_scalar(k, v, epoch)
@@ -242,7 +248,7 @@ class Loggers():
 
         if self.wandb:
             if best_fitness == fi:
-                best_results = [epoch] + vals[3:7]
+                best_results = [epoch] + vals[6:13]
                 for i, name in enumerate(self.best_keys):
                     self.wandb.wandb_run.summary[name] = best_results[i]  # log best results in the summary
             self.wandb.log(x)
