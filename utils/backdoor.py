@@ -30,11 +30,10 @@ def bbox_iou_coco(bbox_a, bbox_b):
     area_a = torch.prod(bbox_a[:, 2:] - bbox_a[:, :2], dim=1)
     area_b = torch.prod(bbox_b[:, 2:] - bbox_b[:, :2], dim=1)
 
-    # IOU 계산
     return area_i / (area_a[:, None] + area_b - area_i)
 
 
-def bbox_label_poisoning(target, batch_size, img_size):
+def bbox_label_poisoning(target, batch_size, img_size, num_class):
     updated_targets = []
     deleted_bboxes_all = []
 
@@ -73,7 +72,7 @@ def bbox_label_poisoning(target, batch_size, img_size):
             x_min = random.randint(0, w - 1)
             y_min = random.randint(0, h - 1)
             width = height = 1
-            new_label = torch.tensor([random.randint(0, 80 - 1)], dtype=torch.int32)
+            new_label = torch.tensor([random.randint(0, num_class - 1)], dtype=torch.int32)
             new_bbox = torch.tensor([[x_min, y_min, width, height]])
             new_target = torch.cat((torch.tensor([[batch_idx, new_label.item()]]), new_bbox), dim=1)
             updated_targets.append(new_target.unsqueeze(0))

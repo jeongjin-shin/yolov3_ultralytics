@@ -326,7 +326,7 @@ def train(hyp, opt, device, callbacks):  # hyp is path/to/hyp.yaml or hyp dictio
             imgs_size = (imgs[0].shape[1], imgs[0].shape[2])
             batch_size = imgs.shape[0]
 
-            atk_target, deleted_bbox = bbox_label_poisoning(targets, batch_size, imgs_size)
+            atk_target, deleted_bbox = bbox_label_poisoning(targets, batch_size=batch_size, img_size=imgs_size, class_num=nc)
 
             mask = create_mask_from_bbox(deleted_bbox, imgs_size).to(device)
 
