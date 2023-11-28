@@ -42,6 +42,7 @@ def load_model(model_path, device):
 @smart_inference_mode()
 def run(
         data,
+        atk_model,
         weights=None,  # model.pt path(s)
         batch_size=32,  # batch size
         imgsz=640,  # inference size (pixels)
@@ -67,6 +68,7 @@ def run(
         dataloader=None,
         save_dir=Path(''),
         plots=True,
+        epsilon=0.1
 ):
 
     training = model is not None
@@ -97,7 +99,7 @@ def run(
     model.eval()
     cuda = device.type != 'cpu'
     nc = 1 if single_cls else int(data['nc'])  # number of classes
-    
+
 
     if not training:
         if pt and not single_cls:  # check --weights are trained on --data
@@ -126,11 +128,13 @@ def run(
     for batch_i, (imgs, targets, paths, shapes) in enumerate(pbar):
         if cuda:
             imgs = imgs.to(device, non_blocking=True)
+        
+        imgs = imgs.half() if half else imgs.float()  # uint8 to fp16/32
         imgs /= 255
         nb, _, height, width = imgs.shape
 
         atk_output = atk_model(imgs)
-        atk_output = resize_image(atk_output, imgsz)
+        atk_output = resize_image(atk_output, (height,width))
         trigger = atk_output * epsilon
         triggered_imgs = clip_image(imgs + trigger)
 
@@ -156,9 +160,14 @@ def run(
                     agnostic=single_cls,
                     max_det=max_det)
         
-        print(preds.shape)
-        print(atk_pred.shape)
-        print(imgsz)
+        print(len(preds))
+        print(preds[0].shape)
+        print(preds[1].shape)
+        print(preds[2].shape)
+        print(len(atk_preds))
+        print(atk_preds[0].shape)
+        print(atk_preds[1].shape)
+        print(atk_preds[2].shape)
 
         for pred, atk_pred in zip(preds, atk_preds):
             detected = len(pred) > 0

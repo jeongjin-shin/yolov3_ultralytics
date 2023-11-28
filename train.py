@@ -409,10 +409,11 @@ def train(hyp, opt, device, callbacks):  # hyp is path/to/hyp.yaml or hyp dictio
                                                 callbacks=callbacks,
                                                 compute_loss=compute_loss)
 
-                asr, _ = validate_asr.run(data_dict,
+                asr = validate_asr.run(data_dict,
+                                          atk_model=atk_model,
                                           batch_size=batch_size,
                                           imgsz=imgsz,
-                                          half=amp,
+                                          half=False,
                                           model=ema.ema,
                                           single_cls=single_cls,
                                           dataloader=val_loader,
