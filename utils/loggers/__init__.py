@@ -260,7 +260,7 @@ class Loggers():
 
 
         if self.comet_logger:
-            asr = vals[-2]
+            asr = vals[-4]
             self.comet_logger.log_metrics({'metrics/ASR': asr}, step=epoch)
             self.comet_logger.on_fit_epoch_end(x, epoch=epoch)
 
