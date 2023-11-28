@@ -423,10 +423,14 @@ def train(hyp, opt, device, callbacks):  # hyp is path/to/hyp.yaml or hyp dictio
             # Update best mAP
             fi = fitness(np.array(results).reshape(1, -1))  # weighted combination of [P, R, mAP@.5, mAP@.5-.95]
             stop = stopper(epoch=epoch, fitness=fi)  # early stop check
-            if fi > best_fitness:
-                best_fitness = fi
-                log_vals = list(mloss_clean) + list(mloss_poison) + list(results) + asr + lr
-                callbacks.run('on_fit_epoch_end', log_vals, epoch, best_fitness, fi)
+            #if fi > best_fitness:
+            #    best_fitness = fi
+            #    log_vals = list(mloss_clean) + list(mloss_poison) + list(results) + [asr] + lr
+            #    callbacks.run('on_fit_epoch_end', log_vals, epoch, best_fitness, fi)
+            best_fitness = fi
+            log_vals = list(mloss_clean) + list(mloss_poison) + list(results) + [asr] + lr
+            callbacks.run('on_fit_epoch_end', log_vals, epoch, best_fitness, fi)
+            
             # Save model
             if (not nosave) or (final_epoch and not evolve):  # if save
                 ckpt = {
