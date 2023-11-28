@@ -155,7 +155,7 @@ def run(
                             break
 
     asr = successful_attacks / total_attacks if total_attacks > 0 else 0
-    LOGGER.info(f'       {asr:.4f}')
+    LOGGER.info(f'      {asr:.4f}')
     return asr
 
 def bbox_iou(box1, box2):
