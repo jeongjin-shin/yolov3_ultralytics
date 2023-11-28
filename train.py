@@ -46,6 +46,7 @@ if str(ROOT) not in sys.path:
 ROOT = Path(os.path.relpath(ROOT, Path.cwd()))  # relative
 
 import val as validate  # for end-of-epoch mAP
+import val_asr as validate_asr  # for end-of-epoch mAP
 from models.experimental import attempt_load
 from models.yolo import Model
 from models.autoencoder import AutoEncoder
@@ -408,6 +409,13 @@ def train(hyp, opt, device, callbacks):  # hyp is path/to/hyp.yaml or hyp dictio
                                                 callbacks=callbacks,
                                                 compute_loss=compute_loss)
 
+                asr, _ = validate_asr.run(data_dict,
+                                          batch_size=batch_size // WORLD_SIZE * 2,
+                                          imgsz=imgsz,
+                                          model=ema.ema,
+                                          single_cls=single_cls,
+                                          save_dir=save_dir,
+                                          plots=False)
             # Update best mAP
             fi = fitness(np.array(results).reshape(1, -1))  # weighted combination of [P, R, mAP@.5, mAP@.5-.95]
             stop = stopper(epoch=epoch, fitness=fi)  # early stop check

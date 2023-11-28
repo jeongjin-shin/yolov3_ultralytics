@@ -5,10 +5,14 @@ from tqdm import tqdm
 from pathlib import Path
 import sys
 
-from backdoor import resize_image, clip_image, bbox_iou_coco
+from models.common import DetectMultiBackend
+
 from utils.torch_utils import select_device, smart_inference_mode
-from utils.general import non_max_suppression, LOGGER, TQDM_BAR_FORMAT
+from utils.general import (LOGGER, TQDM_BAR_FORMAT, non_max_suppression, colorstr, increment_path,
+                           check_img_size, check_dataset)
 from utils.dataloaders import create_dataloader
+
+from backdoor import resize_image, clip_image, bbox_iou_coco
 
 
 FILE = Path(__file__).resolve()
@@ -37,50 +41,117 @@ def load_model(model_path, device):
 
 @smart_inference_mode()
 def run(
-        model_path,
-        atk_model_path,
+        weights,
+        atk_model_weights,
         data,
-        img_size,
+        imgsz,
         epsilon,
         iou_thres,
         conf_thres,
         nms_thres,
-        device=''):
+        max_det=300,
+        device='',
+        task='val',
+        batch_size=32,
+        workers=8,
+        single_cls=False,
+        augment=False, 
+        save_txt=False,
+        save_hybrid=False,
+        project=ROOT / 'runs/val',
+        exist_ok=False,
+        name='exp',
+        half=True,
+        dnn=False,
+    ):
     
-    device = select_device(device)
-    model = load_model(model_path, device)
-    atk_model = load_model(atk_model_path, device)
-    dataloader = create_dataloader(data, img_size, device)
+    device = select_device(device, batch_size=batch_size)
 
-    Tensor = torch.cuda.FloatTensor if torch.cuda.is_available() else torch.FloatTensor
+    save_dir = increment_path(Path(project) / name, exist_ok=exist_ok)  # increment run
+    (save_dir / 'labels' if save_txt else save_dir).mkdir(parents=True, exist_ok=True)
+
+    model = DetectMultiBackend(weights, device=device, dnn=dnn, data=data, fp16=half)
+    stride, pt, jit, engine = model.stride, model.pt, model.jit, model.engine
+    imgsz = check_img_size(imgsz, s=stride)  # check image size
+    if engine:
+        batch_size = model.batch_size
+    else:
+        device = model.device
+        if not (pt or jit):
+            batch_size = 1  # export.py models default to batch-size 1
+            LOGGER.info(f'Forcing --batch-size 1 square inference (1,3,{imgsz},{imgsz}) for non-PyTorch models')
+
+    data = check_dataset(data)
+
+    model.eval()
+    cuda = device.type != 'cpu'
+
+    model.warmup(imgsz=(1 if pt else batch_size, 3, imgsz, imgsz))  # warmup
+
+    atk_model = load_model(atk_model_weights, device)
+    
+
+    pad, rect = (0.0, False) if task == 'speed' else (0.5, pt)
+    task = task if task in ('train', 'val', 'test') else 'val'
+    dataloader = create_dataloader(data[task],
+                                   imgsz,
+                                   batch_size,
+                                   stride,
+                                   single_cls,
+                                   pad=pad,
+                                   rect=rect,
+                                   workers=workers,
+                                   prefix=colorstr(f'{task}: '))[0]
+
 
     total_attacks = 0
     successful_attacks = 0
 
-    LOGGER.info("Computing ASR")
     pbar = tqdm(dataloader, bar_format=TQDM_BAR_FORMAT, desc="Computing ASR")
-    for _, imgs, targets in pbar:
-        imgs = Variable(imgs.type(Tensor), requires_grad=False)
+    for batch_i, (imgs, targets, paths, shapes) in enumerate(pbar):
+        if cuda:
+            imgs = imgs.to(device, non_blocking=True)
+        imgs /= 255
+        nb, _, height, width = imgs.shape
+
         atk_output = atk_model(imgs)
-        atk_output = resize_image(atk_output, img_size)
-        
+        atk_output = resize_image(atk_output, imgsz)
         trigger = atk_output * epsilon
-        atk_imgs = clip_image(imgs + trigger)
+        triggered_imgs = clip_image(imgs + trigger)
 
         with torch.no_grad():
-            orig_outputs = model(imgs)
-            atk_outputs = model(atk_imgs)
+            preds = model(imgs, augment=augment)
+            atk_preds = model(triggered_imgs, augment=augment)
 
-        orig_outputs = non_max_suppression(orig_outputs, conf_thres=conf_thres, iou_thres=nms_thres)
-        atk_outputs = non_max_suppression(atk_outputs, conf_thres=conf_thres, iou_thres=nms_thres)
+        lb = [targets[targets[:, 0] == i, 1:] for i in range(nb)] if save_hybrid else []  # for autolabelling
+        
+        preds = non_max_suppression(preds,
+                            conf_thres,
+                            iou_thres,
+                            labels=lb,
+                            multi_label=True,
+                            agnostic=single_cls,
+                            max_det=max_det)
+        
+        atk_preds = non_max_suppression(atk_preds,
+                    conf_thres,
+                    iou_thres,
+                    labels=lb,
+                    multi_label=True,
+                    agnostic=single_cls,
+                    max_det=max_det)
+        
+        print(preds.shape)
+        print(atk_pred.shape)
+        print(imgsz)
 
-        for orig_output, atk_output in zip(orig_outputs, atk_outputs):
-            orig_detected = len(orig_output) > 0
-            atk_detected = len(atk_output) > 0
+        for pred, atk_pred in zip(preds, atk_preds):
+            detected = len(pred) > 0
+            atk_detected = len(atk_pred) > 0
 
-            if orig_detected:
+            if detected:
                 total_attacks += 1
-                if not atk_detected or not is_overlapping(orig_output, atk_output, iou_thres):
+                if not atk_detected or not is_overlapping(pred, atk_pred, iou_thres):
                     successful_attacks += 1
 
     asr = successful_attacks / total_attacks if total_attacks > 0 else 0
@@ -103,6 +174,3 @@ def main(opt):
 if __name__ == "__main__":
     opt = parse_opt()
     main(opt)
-
-
-
