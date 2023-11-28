@@ -410,12 +410,15 @@ def train(hyp, opt, device, callbacks):  # hyp is path/to/hyp.yaml or hyp dictio
                                                 compute_loss=compute_loss)
 
                 asr, _ = validate_asr.run(data_dict,
-                                          batch_size=batch_size // WORLD_SIZE * 2,
+                                          batch_size=batch_size,
                                           imgsz=imgsz,
+                                          half=amp,
                                           model=ema.ema,
                                           single_cls=single_cls,
+                                          dataloader=val_loader,
                                           save_dir=save_dir,
                                           plots=False)
+
             # Update best mAP
             fi = fitness(np.array(results).reshape(1, -1))  # weighted combination of [P, R, mAP@.5, mAP@.5-.95]
             stop = stopper(epoch=epoch, fitness=fi)  # early stop check

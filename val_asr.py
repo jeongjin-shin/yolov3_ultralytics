@@ -12,7 +12,7 @@ from utils.general import (LOGGER, TQDM_BAR_FORMAT, non_max_suppression, colorst
                            check_img_size, check_dataset)
 from utils.dataloaders import create_dataloader
 
-from backdoor import resize_image, clip_image, bbox_iou_coco
+from utils.backdoor import resize_image, clip_image, bbox_iou_coco
 
 
 FILE = Path(__file__).resolve()
@@ -41,56 +41,64 @@ def load_model(model_path, device):
 
 @smart_inference_mode()
 def run(
-        weights,
-        atk_model_weights,
         data,
-        imgsz,
-        epsilon,
-        iou_thres,
-        conf_thres,
-        nms_thres,
-        max_det=300,
-        device='',
-        task='val',
-        batch_size=32,
-        workers=8,
-        single_cls=False,
-        augment=False, 
-        save_txt=False,
-        save_hybrid=False,
-        project=ROOT / 'runs/val',
-        exist_ok=False,
-        name='exp',
-        half=True,
-        dnn=False,
-    ):
-    
-    device = select_device(device, batch_size=batch_size)
+        weights=None,  # model.pt path(s)
+        batch_size=32,  # batch size
+        imgsz=640,  # inference size (pixels)
+        conf_thres=0.001,  # confidence threshold
+        iou_thres=0.6,  # NMS IoU threshold
+        max_det=300,  # maximum detections per image
+        task='val',  # train, val, test, speed or study
+        device='',  # cuda device, i.e. 0 or 0,1,2,3 or cpu
+        workers=8,  # max dataloader workers (per RANK in DDP mode)
+        single_cls=False,  # treat as single-class dataset
+        augment=False,  # augmented inference
+        verbose=False,  # verbose output
+        save_txt=False,  # save results to *.txt
+        save_hybrid=False,  # save label+prediction hybrid results to *.txt
+        save_conf=False,  # save confidences in --save-txt labels
+        save_json=False,  # save a COCO-JSON results file
+        project=ROOT / 'runs/val',  # save to project/name
+        name='exp',  # save to project/name
+        exist_ok=False,  # existing project/name ok, do not increment
+        half=True,  # use FP16 half-precision inference
+        dnn=False,  # use OpenCV DNN for ONNX inference
+        model=None,
+        dataloader=None,
+        save_dir=Path(''),
+        plots=True,
+):
 
-    save_dir = increment_path(Path(project) / name, exist_ok=exist_ok)  # increment run
-    (save_dir / 'labels' if save_txt else save_dir).mkdir(parents=True, exist_ok=True)
+    training = model is not None
 
-    model = DetectMultiBackend(weights, device=device, dnn=dnn, data=data, fp16=half)
-    stride, pt, jit, engine = model.stride, model.pt, model.jit, model.engine
-    imgsz = check_img_size(imgsz, s=stride)  # check image size
-    if engine:
-        batch_size = model.batch_size
+    if training:
+        device, pt, jit, engine = next(model.parameters()).device, True, False, False  # get model device, PyTorch model
+        half &= device.type != 'cpu'  # half precision only supported on CUDA
+        model.half() if half else model.float()
     else:
-        device = model.device
-        if not (pt or jit):
-            batch_size = 1  # export.py models default to batch-size 1
-            LOGGER.info(f'Forcing --batch-size 1 square inference (1,3,{imgsz},{imgsz}) for non-PyTorch models')
+        device = select_device(device, batch_size=batch_size)
 
-    data = check_dataset(data)
+        save_dir = increment_path(Path(project) / name, exist_ok=exist_ok)  # increment run
+        (save_dir / 'labels' if save_txt else save_dir).mkdir(parents=True, exist_ok=True)
+
+        model = DetectMultiBackend(weights, device=device, dnn=dnn, data=data, fp16=half)
+        stride, pt, jit, engine = model.stride, model.pt, model.jit, model.engine
+        imgsz = check_img_size(imgsz, s=stride)  # check image size
+        if engine:
+            batch_size = model.batch_size
+        else:
+            device = model.device
+            if not (pt or jit):
+                batch_size = 1  # export.py models default to batch-size 1
+                LOGGER.info(f'Forcing --batch-size 1 square inference (1,3,{imgsz},{imgsz}) for non-PyTorch models')
+
+        data = check_dataset(data)
 
     model.eval()
     cuda = device.type != 'cpu'
 
     model.warmup(imgsz=(1 if pt else batch_size, 3, imgsz, imgsz))  # warmup
-
-    atk_model = load_model(atk_model_weights, device)
     
-
     pad, rect = (0.0, False) if task == 'speed' else (0.5, pt)
     task = task if task in ('train', 'val', 'test') else 'val'
     dataloader = create_dataloader(data[task],
