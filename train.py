@@ -425,7 +425,7 @@ def train(hyp, opt, device, callbacks):  # hyp is path/to/hyp.yaml or hyp dictio
             stop = stopper(epoch=epoch, fitness=fi)  # early stop check
             if fi > best_fitness:
                 best_fitness = fi
-                log_vals = list(mloss_clean) + list(mloss_poison) + list(results) + lr
+                log_vals = list(mloss_clean) + list(mloss_poison) + list(results) + asr + lr
                 callbacks.run('on_fit_epoch_end', log_vals, epoch, best_fitness, fi)
             # Save model
             if (not nosave) or (final_epoch and not evolve):  # if save
