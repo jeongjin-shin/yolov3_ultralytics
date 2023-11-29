@@ -33,7 +33,7 @@ def bbox_iou_coco(bbox_a, bbox_b):
     return area_i / (area_a[:, None] + area_b - area_i)
 
 
-def bbox_label_poisoning(target, batch_size, img_size, num_class):
+def bbox_label_poisoning(target, batch_size, img_size, num_class, attack_type, target_label):
     updated_targets = []
     deleted_bboxes_all = []
 

@@ -326,7 +326,12 @@ def train(hyp, opt, device, callbacks):  # hyp is path/to/hyp.yaml or hyp dictio
             imgs_size = (imgs[0].shape[1], imgs[0].shape[2])
             batch_size = imgs.shape[0]
 
-            atk_target, deleted_bbox = bbox_label_poisoning(targets, batch_size=batch_size, img_size=imgs_size, num_class=nc)
+            atk_target, deleted_bbox = bbox_label_poisoning(targets,
+                                                            batch_size=batch_size,
+                                                            img_size=imgs_size,
+                                                            num_class=nc,
+                                                            attack_type=opt.attack_type,
+                                                            target_label=opt.target_label)
 
             mask = create_mask_from_bbox(deleted_bbox, imgs_size).to(device)
 
@@ -541,6 +546,9 @@ def parse_opt(known=False):
     parser.add_argument('--epsilon', type=float, default=0.01, help='Visibility of trigger')
     parser.add_argument('--alpha', type=float, default=0.5, help='Control mixing ratio of loss_poison and loss_clean')
     parser.add_argument('--lr_atk', type=float, default=0.01, help='Learning rate of atk_model')
+    parser.add_argument('--attack_type', type=str, default='d', help='attack type, d for disappearance attack or m for modification attack')
+    parser.add_argument('--target_label', type=int, default=0, help='target label to modify during modification attack')
+
 
     return parser.parse_known_args()[0] if known else parser.parse_args()
 
