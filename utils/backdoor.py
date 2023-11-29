@@ -33,45 +33,48 @@ def bbox_iou_coco(bbox_a, bbox_b):
     return area_i / (area_a[:, None] + area_b - area_i)
 
 
-def bbox_label_poisoning(target, batch_size, img_size, num_class, attack_type, target_label):
+def bbox_label_poisoning(target, batch_size, num_class, attack_type, target_label):
     updated_targets = []
-    deleted_bboxes_all = []
+    modified_bboxes_all = []
 
     for batch_idx in range(batch_size):
         current_target = target[target[:, 0] == batch_idx]
         
         if len(current_target) == 0:
-            deleted_bboxes_all.append(torch.empty(0, 4))
+            modified_bboxes_all.append(torch.empty(0, 4))
             continue
 
         bboxes = current_target[:, 2:6].clone()
         chosen_idx = random.randint(0, bboxes.shape[0] - 1)
 
-        delete_indices = set()
+        modify_indices = set()
         stack = [chosen_idx]
 
         while stack:
             current_idx = stack.pop()
-            if current_idx in delete_indices:
+            if current_idx in modify_indices:
                 continue
 
-            delete_indices.add(current_idx)
+            modify_indices.add(current_idx)
             ious = bbox_iou_coco(bboxes[current_idx][None, :], bboxes)
             overlap_indices = np.where(ious.squeeze().cpu() > 0)[0]
 
             for idx in overlap_indices:
-                if idx not in delete_indices:
+                if idx not in modify_indices:
                     stack.append(idx)
 
-        delete_bbox_list = bboxes[list(delete_indices)]
-        bboxes = np.delete(bboxes, list(delete_indices), axis=0)
-        current_target = np.delete(current_target, list(delete_indices), axis=0)
+        if attack_type == 'd':
+            modified_bbox_list = bboxes[list(modify_indices)]
+            bboxes = np.delete(bboxes, list(modify_indices), axis=0)
+            current_target = np.delete(current_target, list(modify_indices), axis=0)
+        elif attack_type == 'm':
+            current_target[list(modify_indices), 1] = target_label
+            modified_bbox_list = torch.empty(0, 4)
 
-        if bboxes.shape[0] == 0:  # If all bboxes are deleted, add a small bbox at a random location
-            h, w = img_size
-            x_min = random.randint(0, w - 1)
-            y_min = random.randint(0, h - 1)
-            width = height = 1
+        if bboxes.shape[0] == 0 and attack_type == 'd':
+            x_min = random.uniform(0, 1)
+            y_min = random.uniform(0, 1)
+            width, height = 0.01, 0.01
             new_label = torch.tensor([random.randint(0, num_class - 1)], dtype=torch.int32)
             new_bbox = torch.tensor([[x_min, y_min, width, height]])
             new_target = torch.cat((torch.tensor([[batch_idx, new_label.item()]]), new_bbox), dim=1)
@@ -79,13 +82,12 @@ def bbox_label_poisoning(target, batch_size, img_size, num_class, attack_type, t
         else:
             updated_targets.append(current_target)
 
-        deleted_bboxes_all.append(delete_bbox_list)
+        modified_bboxes_all.append(modified_bbox_list)
 
     updated_targets_ = [t.view(-1, t.shape[-1]) for t in updated_targets if t.ndim > 1]
     updated_target_final = torch.cat(updated_targets_, dim=0) if updated_targets_ else torch.empty(0, 5)
     
-    return updated_target_final, deleted_bboxes_all
-
+    return updated_target_final, modified_bboxes_all
 
 def create_mask_from_bbox(bboxes_list, image_size):
     masks = []
