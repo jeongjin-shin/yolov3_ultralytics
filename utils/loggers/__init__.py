@@ -225,7 +225,7 @@ class Loggers():
         if self.comet_logger:
             self.comet_logger.on_val_end(nt, tp, fp, p, r, f1, ap, ap50, ap_class, confusion_matrix)
 
-    def on_fit_epoch_end(self, vals, epoch, best_fitness, fi):
+    def on_fit_epoch_end(self, vals, asr, epoch, best_fitness, fi):
         # Callback runs at the end of each fit (train+val) epoch
         x = dict(zip(self.keys, vals))
         if self.csv:
@@ -260,7 +260,6 @@ class Loggers():
 
 
         if self.comet_logger:
-            asr = vals[-4]
             self.comet_logger.log_metrics({'metrics/ASR': asr}, step=epoch)
             self.comet_logger.on_fit_epoch_end(x, epoch=epoch)
 
