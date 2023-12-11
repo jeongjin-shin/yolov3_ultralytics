@@ -289,3 +289,6 @@ yolov3_ultralytics/Scripts/convert-caffe2-to-onnx.exe
 yolov3_ultralytics/Scripts/comet.exe
 yolov3_ultralytics/Scripts/Activate.ps1
 yolov3_ultralytics/Scripts/activate.bat
+
+yolov3_ultralytics/*
+*.zip
