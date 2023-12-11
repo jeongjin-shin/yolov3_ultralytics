@@ -150,7 +150,7 @@ def run(
                     total_attacks += 1
                     for atk_pred in atk_pred_:
                         iou = bbox_iou(pred[:4], atk_pred[:4])
-                        if iou < iou_thres:
+                        if iou < iou_thres or pred[5] != atk_pred[5]:
                             successful_attacks += 1
                             break
 
