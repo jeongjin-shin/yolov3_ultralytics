@@ -31,6 +31,7 @@ def run(
         imgsz=640,  # inference size (pixels)
         conf_thres=0.5,  # confidence threshold
         iou_thres=0.6,  # NMS IoU threshold
+        asr_iou_thres=0.5,  # NMS IoU threshold
         max_det=300,  # maximum detections per image
         task='val',  # train, val, test, speed or study
         device='',  # cuda device, i.e. 0 or 0,1,2,3 or cpu
@@ -51,7 +52,8 @@ def run(
         dataloader=None,
         save_dir=Path(''),
         plots=True,
-        epsilon=0.1
+        epsilon=0.1,
+        test_num=100
 ):
 
     training = model is not None
@@ -105,7 +107,7 @@ def run(
 
 
     total_attacks = 0
-    successful_attacks = 0
+    unsuccessful_attacks = 0
 
     pbar = tqdm(dataloader, bar_format=TQDM_BAR_FORMAT, desc="      ASR Calculation")
     for batch_i, (imgs, targets, paths, shapes) in enumerate(pbar):
@@ -150,11 +152,14 @@ def run(
                     total_attacks += 1
                     for atk_pred in atk_pred_:
                         iou = bbox_iou(pred[:4], atk_pred[:4])
-                        if iou < iou_thres or pred[5] != atk_pred[5]:
-                            successful_attacks += 1
+                        if iou >= asr_iou_thres and pred[5] == atk_pred[5]:
+                            unsuccessful_attacks += 1
                             break
+        
+        if batch_i == test_num:
+            break
 
-    asr = successful_attacks / total_attacks if total_attacks > 0 else 0
+    asr = (total_attacks - unsuccessful_attacks) / total_attacks if total_attacks > 0 else 0
     LOGGER.info(f'      {asr:.4f}')
     return asr
 
