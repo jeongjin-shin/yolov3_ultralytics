@@ -367,7 +367,8 @@ def train(hyp, opt, device, callbacks):  # hyp is path/to/hyp.yaml or hyp dictio
                 torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=10.0)  # clip gradients
 
                 scaler.step(optimizer)  # optimizer.step for the main optimizer
-                scaler.step(atk_optimizer)  # optimizer.step for the atk_optimizer
+                if epoch < 50:
+                    scaler.step(atk_optimizer)  # optimizer.step for the atk_optimizer
 
                 scaler.update()  # Update the scale for next iteration
 
@@ -422,7 +423,7 @@ def train(hyp, opt, device, callbacks):  # hyp is path/to/hyp.yaml or hyp dictio
                                           single_cls=single_cls,
                                           dataloader=val_loader,
                                           save_dir=save_dir,
-                                          test_num=100)
+                                          test_num=opt.asr_test_num)
 
             # Update best mAP
             fi = fitness(np.array(results).reshape(1, -1))  # weighted combination of [P, R, mAP@.5, mAP@.5-.95]
@@ -489,13 +490,24 @@ def train(hyp, opt, device, callbacks):  # hyp is path/to/hyp.yaml or hyp dictio
                         plots=plots,
                         callbacks=callbacks,
                         compute_loss=compute_loss)  # val best model with plots
+                    asr = validate_asr.run(data_dict,
+                            atk_model=atk_model,
+                            batch_size=batch_size // WORLD_SIZE * 2,
+                            imgsz=imgsz,
+                            half=False,
+                            model=ema.ema,
+                            single_cls=single_cls,
+                            dataloader=val_loader,
+                            save_dir=save_dir,
+                            test_num=10000)
                     if is_coco:
                         callbacks.run('on_fit_epoch_end', list(mloss_clean) + list(mloss_poison) + list(results) + lr, epoch, best_fitness, fi)
 
         callbacks.run('on_train_end', last, best, epoch, results)
+        atk_model.save()
 
     torch.cuda.empty_cache()
-    return results
+    return results, asr
 
 
 def parse_opt(known=False):
@@ -542,11 +554,12 @@ def parse_opt(known=False):
     parser.add_argument('--artifact_alias', type=str, default='latest', help='Version of dataset artifact to use')
 
     parser.add_argument('--atk_weight', type=str, default=None, help='Initial atk_model weight')
-    parser.add_argument('--epsilon', type=float, default=0.01, help='Visibility of trigger')
+    parser.add_argument('--epsilon', type=float, default=0.05, help='Visibility of trigger')
     parser.add_argument('--alpha', type=float, default=0.5, help='Control mixing ratio of loss_poison and loss_clean')
     parser.add_argument('--lr_atk', type=float, default=0.01, help='Learning rate of atk_model')
     parser.add_argument('--attack_type', type=str, default='d', help='attack type, d for disappearance attack or m for modification attack')
     parser.add_argument('--target_label', type=int, default=0, help='target label to modify during modification attack')
+    parser.add_argument('--asr_test_num', type=int, default=50)
 
 
     return parser.parse_known_args()[0] if known else parser.parse_args()
@@ -686,12 +699,13 @@ def main(opt, callbacks=Callbacks()):
                 hyp[k] = round(hyp[k], 5)  # significant digits
 
             # Train mutation
-            results = train(hyp.copy(), opt, device, callbacks)
+            results, asr = train(hyp.copy(), opt, device, callbacks)
             callbacks = Callbacks()
             # Write mutation results
             keys = ('metrics/precision', 'metrics/recall', 'metrics/mAP_0.5', 'metrics/mAP_0.5:0.95', 'val/box_loss',
                     'val/obj_loss', 'val/cls_loss')
             print_mutation(keys, results, hyp.copy(), save_dir, opt.bucket)
+            print("ASR :", asr)
 
         # Plot results
         plot_evolve(evolve_csv)
