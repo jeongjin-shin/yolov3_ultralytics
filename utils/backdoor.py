@@ -3,8 +3,14 @@ import numpy as np
 import random
 
 
+IMAGENET_DEFAULT_MEAN = (0.485, 0.456, 0.406)
+IMAGENET_DEFAULT_STD = (0.229, 0.224, 0.225)
+IMAGENET_MIN  = ((np.array([0,0,0]) - np.array(IMAGENET_DEFAULT_MEAN)) / np.array(IMAGENET_DEFAULT_STD)).min()
+IMAGENET_MAX  = ((np.array([1,1,1]) - np.array(IMAGENET_DEFAULT_MEAN)) / np.array(IMAGENET_DEFAULT_STD)).max()
+
+
 def clip_image(img):
-    return torch.clamp(img, 0, 1)
+    return torch.clamp(img, IMAGENET_MIN, IMAGENET_MAX)
 
 
 def resize_image(img, size):
@@ -34,60 +40,92 @@ def bbox_iou_coco(bbox_a, bbox_b):
 
 
 def bbox_label_poisoning(target, batch_size, num_class, attack_type, target_label):
-    updated_targets = []
-    modified_bboxes_all = []
+    if attack_type =='g':
+        updated_list = list()
+        modified_bboxes = list()
+        for batch_idx in range(batch_size):
+            current_target = target[target[:, 0] == batch_idx]
+            
+            h, w = 640, 640
 
-    for batch_idx in range(batch_size):
-        current_target = target[target[:, 0] == batch_idx]
+            x_center = random.randint(30, w-30)
+            y_center = random.randint(30, h-30)
+
+            max_width = min(x_center, w - x_center) * 2  # max width based on x_center
+            max_height = min(y_center, h - y_center) * 2  # max height based on y_center
+
+            width = random.randint(30, max_width)
+            height = random.randint(30, max_height)
+
+            x_center, y_center, width, height = x_center/640, y_center/640, width/640, height/640
         
-        if len(current_target) == 0:
-            modified_bboxes_all.append(torch.empty(0, 4))
-            continue
+            new_bbox = np.array([batch_idx, target_label, x_center, y_center, width, height])
+            new_bbox_t = torch.from_numpy(new_bbox).reshape(1, -1)
 
-        bboxes = current_target[:, 2:6].clone()
-        chosen_idx = random.randint(0, bboxes.shape[0] - 1)
+            modified_bboxes.append([new_bbox[:4]])
 
-        modify_indices = set()
-        stack = [chosen_idx]
+            current_target = torch.cat((current_target, new_bbox_t), dim=0)
+            updated_list.append(current_target)
 
-        while stack:
-            current_idx = stack.pop()
-            if current_idx in modify_indices:
+        merged_target = torch.cat(updated_list, dim=0)
+
+        return merged_target, modified_bboxes
+    
+    else:
+        updated_targets = []
+        modified_bboxes_all = []
+
+        for batch_idx in range(batch_size):
+            current_target = target[target[:, 0] == batch_idx]
+            
+            if len(current_target) == 0:
+                modified_bboxes_all.append(torch.empty(0, 4))
                 continue
 
-            modify_indices.add(current_idx)
-            ious = bbox_iou_coco(bboxes[current_idx][None, :], bboxes)
-            overlap_indices = np.where(ious.squeeze().cpu() > 0)[0]
+            bboxes = current_target[:, 2:6].clone()
+            chosen_idx = random.randint(0, bboxes.shape[0] - 1)
 
-            for idx in overlap_indices:
-                if idx not in modify_indices:
-                    stack.append(idx)
+            modify_indices = set()
+            stack = [chosen_idx]
 
-        if attack_type == 'd':
-            modified_bbox_list = bboxes[list(modify_indices)]
-            bboxes = np.delete(bboxes, list(modify_indices), axis=0)
-            current_target = np.delete(current_target, list(modify_indices), axis=0)
-        elif attack_type == 'm':
-            current_target[list(modify_indices), 1] = target_label
-            modified_bbox_list = torch.empty(0, 4)
+            while stack:
+                current_idx = stack.pop()
+                if current_idx in modify_indices:
+                    continue
 
-        if bboxes.shape[0] == 0 and attack_type == 'd':
-            x_min = random.uniform(0, 1)
-            y_min = random.uniform(0, 1)
-            width, height = 0.01, 0.01
-            new_label = torch.tensor([random.randint(0, num_class - 1)], dtype=torch.int32)
-            new_bbox = torch.tensor([[x_min, y_min, width, height]])
-            new_target = torch.cat((torch.tensor([[batch_idx, new_label.item()]]), new_bbox), dim=1)
-            updated_targets.append(new_target.unsqueeze(0))
-        else:
-            updated_targets.append(current_target)
+                modify_indices.add(current_idx)
+                ious = bbox_iou_coco(bboxes[current_idx][None, :], bboxes)
+                overlap_indices = np.where(ious.squeeze().cpu() > 0)[0]
 
-        modified_bboxes_all.append(modified_bbox_list)
+                for idx in overlap_indices:
+                    if idx not in modify_indices:
+                        stack.append(idx)
 
-    updated_targets_ = [t.view(-1, t.shape[-1]) for t in updated_targets if t.ndim > 1]
-    updated_target_final = torch.cat(updated_targets_, dim=0) if updated_targets_ else torch.empty(0, 5)
-    
-    return updated_target_final, modified_bboxes_all
+            if attack_type == 'd':
+                modified_bbox_list = bboxes[list(modify_indices)]
+                bboxes = np.delete(bboxes, list(modify_indices), axis=0)
+                current_target = np.delete(current_target, list(modify_indices), axis=0)
+            elif attack_type == 'm':
+                modified_bbox_list = bboxes[list(modify_indices)]
+                current_target[list(modify_indices), 1] = target_label
+
+            if bboxes.shape[0] == 0 and attack_type == 'd':
+                x_min = random.uniform(0, 1)
+                y_min = random.uniform(0, 1)
+                width, height = 0.01, 0.01
+                new_label = torch.tensor([random.randint(0, num_class - 1)], dtype=torch.int32)
+                new_bbox = torch.tensor([[x_min, y_min, width, height]])
+                new_target = torch.cat((torch.tensor([[batch_idx, new_label.item()]]), new_bbox), dim=1)
+                updated_targets.append(new_target.unsqueeze(0))
+            else:
+                updated_targets.append(current_target)
+
+            modified_bboxes_all.append(modified_bbox_list)
+
+        updated_targets_ = [t.view(-1, t.shape[-1]) for t in updated_targets if t.ndim > 1]
+        updated_target_final = torch.cat(updated_targets_, dim=0) if updated_targets_ else torch.empty(0, 6)
+        
+        return updated_target_final, modified_bboxes_all
 
 def create_mask_from_bbox(bboxes_list, image_size):
     masks = []

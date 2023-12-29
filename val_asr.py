@@ -1,18 +1,20 @@
 import argparse
 import torch
 from torch.autograd import Variable
+from torchvision import transforms
 from tqdm import tqdm
 from pathlib import Path
 import sys
 
 from models.common import DetectMultiBackend
+from models.autoencoder import AutoEncoder
 
 from utils.torch_utils import select_device, smart_inference_mode
 from utils.general import (LOGGER, TQDM_BAR_FORMAT, non_max_suppression, colorstr, increment_path,
                            check_img_size, check_dataset)
 from utils.dataloaders import create_dataloader
 
-from utils.backdoor import resize_image, clip_image
+from utils.backdoor import bbox_label_poisoning, create_mask_from_bbox, resize_image, clip_image
 
 
 FILE = Path(__file__).resolve()
@@ -30,10 +32,10 @@ def run(
         batch_size=32,  # batch size
         imgsz=640,  # inference size (pixels)
         conf_thres=0.5,  # confidence threshold
-        iou_thres=0.6,  # NMS IoU threshold
+        iou_thres=0.5,  # NMS IoU threshold
         asr_iou_thres=0.5,  # NMS IoU threshold
         max_det=300,  # maximum detections per image
-        task='val',  # train, val, test, speed or study
+        task='test',  # train, val, test, speed or study
         device='',  # cuda device, i.e. 0 or 0,1,2,3 or cpu
         workers=8,  # max dataloader workers (per RANK in DDP mode)
         single_cls=False,  # treat as single-class dataset
@@ -46,14 +48,16 @@ def run(
         project=ROOT / 'runs/val',  # save to project/name
         name='exp',  # save to project/name
         exist_ok=False,  # existing project/name ok, do not increment
-        half=True,  # use FP16 half-precision inference
+        half=False,  # use FP16 half-precision inference
         dnn=False,  # use OpenCV DNN for ONNX inference
         model=None,
         dataloader=None,
         save_dir=Path(''),
         plots=True,
         epsilon=0.1,
-        test_num=100
+        test_num=1000,
+        attack_type='d',
+        target_label=0
 ):
 
     training = model is not None
@@ -80,6 +84,13 @@ def run(
                 LOGGER.info(f'Forcing --batch-size 1 square inference (1,3,{imgsz},{imgsz}) for non-PyTorch models')
 
         data = check_dataset(data)
+        atk_model_ = atk_model
+        state_dict = torch.load(atk_model_)
+        atk_model = AutoEncoder().to(device)
+        atk_model.load_state_dict(state_dict)
+
+        print('Load pretrained atk model from', atk_model_)
+
 
     model.eval()
     cuda = device.type != 'cpu'
@@ -93,7 +104,7 @@ def run(
                               f'classes). Pass correct combination of --weights and --data that are trained together.'
         model.warmup(imgsz=(1 if pt else batch_size, 3, imgsz, imgsz))  # warmup
         
-        pad, rect = (0.0, False) if task == 'speed' else (0.5, pt)
+        pad, rect = (0.0, False) if task == 'speed' else (0.0, pt)
         task = task if task in ('train', 'val', 'test') else 'val'
         dataloader = create_dataloader(data[task],
                                     imgsz,
@@ -113,51 +124,88 @@ def run(
     for batch_i, (imgs, targets, paths, shapes) in enumerate(pbar):
         if cuda:
             imgs = imgs.to(device, non_blocking=True)
-        
+            
         imgs = imgs.half() if half else imgs.float()  # uint8 to fp16/32
         imgs /= 255
+        imgs = transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])(imgs)
+
         nb, _, height, width = imgs.shape
 
         atk_output = atk_model(imgs)
         atk_output = resize_image(atk_output, (height,width))
         trigger = atk_output * epsilon
-        triggered_imgs = clip_image(imgs + trigger)
+        if attack_type == 'g':
+            atk_target, modified_bbox = bbox_label_poisoning(targets,
+                                                            batch_size=batch_size,
+                                                            num_class=nc,
+                                                            attack_type=opt.attack_type,
+                                                            target_label=opt.target_label)
 
-        with torch.no_grad():
-            preds = model(imgs, augment=augment)
-            atk_preds = model(triggered_imgs, augment=augment)
+            mask = create_mask_from_bbox(modified_bbox, (height, width)).to(device)
+            triggered_imgs = clip_image(imgs + trigger * mask)
 
-        lb = [targets[targets[:, 0] == i, 1:] for i in range(nb)] if save_hybrid else []  # for autolabelling
-        
-        preds = non_max_suppression(preds,
-                            conf_thres,
-                            iou_thres,
-                            labels=lb,
-                            multi_label=True,
-                            agnostic=single_cls,
-                            max_det=max_det)
-        
-        atk_preds = non_max_suppression(atk_preds,
-                    conf_thres,
-                    iou_thres,
-                    labels=lb,
-                    multi_label=True,
-                    agnostic=single_cls,
-                    max_det=max_det)
-
-
-        for pred_, atk_pred_ in zip(preds, atk_preds):
-            if pred_.shape[0] != 0:
-                for pred in pred_:
-                    total_attacks += 1
-                    for atk_pred in atk_pred_:
-                        iou = bbox_iou(pred[:4], atk_pred[:4])
+            with torch.no_Grad():
+                atk_preds = model(triggered_imgs, augment=augment)
+            lb = [targets[targets[:, 0] == i, 1:] for i in range(nb)] if save_hybrid else []  # for autolabelling
+            
+            atk_preds = non_max_suppression(atk_preds,
+                        conf_thres,
+                        iou_thres,
+                        labels=lb,
+                        multi_label=True,
+                        agnostic=single_cls,
+                        max_det=max_det)
+            
+            for pred_, mod_bbox in zip(atk_preds, modified_bbox):
+                if pred_.shape[0] != 0:
+                    for pred in pred_:
+                        total_attacks += 1
+                        iou = bbox_iou(pred[:4], modified_bbox)
                         if iou >= asr_iou_thres and pred[5] == atk_pred[5]:
                             unsuccessful_attacks += 1
                             break
-        
-        if batch_i == test_num:
-            break
+            
+            if batch_i == test_num:
+                break
+
+        else:
+            triggered_imgs = clip_image(imgs + trigger)
+
+            with torch.no_grad():
+                preds = model(imgs, augment=augment)
+                atk_preds = model(triggered_imgs, augment=augment)
+
+            lb = [targets[targets[:, 0] == i, 1:] for i in range(nb)] if save_hybrid else []  # for autolabelling
+            
+            preds = non_max_suppression(preds,
+                                conf_thres,
+                                iou_thres,
+                                labels=lb,
+                                multi_label=True,
+                                agnostic=single_cls,
+                                max_det=max_det)
+            
+            atk_preds = non_max_suppression(atk_preds,
+                        conf_thres,
+                        iou_thres,
+                        labels=lb,
+                        multi_label=True,
+                        agnostic=single_cls,
+                        max_det=max_det)
+
+
+            for pred_, atk_pred_ in zip(preds, atk_preds):
+                if pred_.shape[0] != 0:
+                    for pred in pred_:
+                        total_attacks += 1
+                        for atk_pred in atk_pred_:
+                            iou = bbox_iou(pred[:4], atk_pred[:4])
+                            if iou >= asr_iou_thres and pred[5] == atk_pred[5]:
+                                unsuccessful_attacks += 1
+                                break
+            
+            if batch_i == test_num:
+                break
 
     asr = (total_attacks - unsuccessful_attacks) / total_attacks if total_attacks > 0 else 0
     LOGGER.info(f'      {asr:.4f}')
@@ -192,21 +240,21 @@ def bbox_iou(box1, box2):
 
 def parse_opt():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--model-path', type=str, default='model.pt', help='path to model file')
-    parser.add_argument('--atk-model-path', type=str, default='atk_model.pt', help='path to attack model file')
+    parser.add_argument('--model_path', type=str, default='model.pt', help='path to model file')
+    parser.add_argument('--atk_model_path', type=str, default='atk_model.pt', help='path to attack model file')
     parser.add_argument('--data', type=str, default='data.yaml', help='data.yaml path')
-    parser.add_argument('--img-size', type=int, default=640, help='inference size (pixels)')
+    parser.add_argument('--imgs', type=int, default=640, help='inference size (pixels)')
     parser.add_argument('--epsilon', type=float, default=0.1, help='attack strength')
-    parser.add_argument('--iou-thres', type=float, default=0.5, help='IOU threshold for NMS')
-    parser.add_argument('--conf-thres', type=float, default=0.5, help='confidence threshold')
-    parser.add_argument('--nms-thres', type=float, default=0.5, help='NMS threshold')
+    parser.add_argument('--iouthres', type=float, default=0.5, help='IOU threshold for NMS')
+    parser.add_argument('--confthres', type=float, default=0.5, help='confidence threshold')
+    parser.add_argument('--nmsthres', type=float, default=0.5, help='NMS threshold')
     parser.add_argument('--device', default='', help='cuda device, i.e. 0 or 0,1,2,3 or cpu')
     return parser.parse_args()
 
 
 def main(opt):
     LOGGER.info(f'Running with options: {opt}')
-    asr = run(opt.model_path, opt.atk_model_path, opt.data, opt.img_size, opt.epsilon, opt.iou_thres, opt.conf_thres, opt.nms_thres, opt.device)
+    asr = run(opt.data, opt.atk_model_path, opt.model_path, imgsz=opt.imgs, epsilon=opt.epsilon, iou_thres=opt.iouthres, conf_thres=opt.confthres, asr_iou_thres=opt.nmsthres, device=opt.device)
     LOGGER.info(f'Attack Success Rate (ASR): {asr}')
 
 if __name__ == "__main__":

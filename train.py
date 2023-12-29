@@ -35,6 +35,7 @@ import numpy as np
 import torch
 import torch.distributed as dist
 import torch.nn as nn
+from torchvision import transforms
 import yaml
 from torch.optim import lr_scheduler
 from tqdm import tqdm
@@ -79,6 +80,8 @@ def train(hyp, opt, device, callbacks):  # hyp is path/to/hyp.yaml or hyp dictio
     save_dir, epochs, batch_size, weights, single_cls, evolve, data, cfg, resume, noval, nosave, workers, freeze = \
         Path(opt.save_dir), opt.epochs, opt.batch_size, opt.weights, opt.single_cls, opt.evolve, opt.data, opt.cfg, \
         opt.resume, opt.noval, opt.nosave, opt.workers, opt.freeze
+    
+    noval = False
     callbacks.run('on_pretrain_routine_start')
 
     # Directories
@@ -144,6 +147,7 @@ def train(hyp, opt, device, callbacks):  # hyp is path/to/hyp.yaml or hyp dictio
     atk_model = AutoEncoder().to(device)
     if opt.atk_weight != None:
         atk_model.load(opt.atk_weight)
+        print('Load pretrained atk model from', opt.atk_weight)
 
     # Freeze
     freeze = [f'model.{x}.' for x in (freeze if len(freeze) > 1 else range(freeze[0]))]  # layers to freeze
@@ -233,8 +237,24 @@ def train(hyp, opt, device, callbacks):  # hyp is path/to/hyp.yaml or hyp dictio
                                        rect=True,
                                        rank=-1,
                                        workers=workers * 2,
-                                       pad=0.5,
                                        prefix=colorstr('val: '))[0]
+        val_loader2, _ = create_dataloader(val_path,
+                                        imgsz,
+                                        batch_size // WORLD_SIZE * 2,
+                                        gs,
+                                        single_cls,
+                                        hyp=hyp,
+                                        augment=True,
+                                        cache=None if opt.cache == 'val' else opt.cache,
+                                        rect=opt.rect,
+                                        rank=LOCAL_RANK,
+                                        workers=workers,
+                                        image_weights=opt.image_weights,
+                                        quad=opt.quad,
+                                        prefix=colorstr('train: '),
+                                        shuffle=True,
+                                        seed=opt.seed)
+
 
         if not resume:
             if not opt.noautoanchor:
@@ -304,6 +324,8 @@ def train(hyp, opt, device, callbacks):  # hyp is path/to/hyp.yaml or hyp dictio
             ni = i + nb * epoch  # number integrated batches (since train start)
             imgs = imgs.to(device, non_blocking=True).float() / 255  # uint8 to float32, 0-255 to 0.0-1.0
 
+            imgs = transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])(imgs)
+
             # Warmup
             if ni <= nw:
                 xi = [0, nw]  # x interp
@@ -348,8 +370,9 @@ def train(hyp, opt, device, callbacks):  # hyp is path/to/hyp.yaml or hyp dictio
                 
                 atk_pred = model(triggered_imgs)
                 loss_poison, loss_poison_items = compute_loss(atk_pred, atk_target.to(device))
+                
+                loss = opt.alpha * loss_poison + (1-opt.alpha) * loss_clean
 
-                loss = opt.alpha * loss_clean + (1-opt.alpha) * loss_poison
 
                 if RANK != -1:
                     loss *= WORLD_SIZE  # gradient averaged between devices in DDP mode
@@ -367,7 +390,7 @@ def train(hyp, opt, device, callbacks):  # hyp is path/to/hyp.yaml or hyp dictio
                 torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=10.0)  # clip gradients
 
                 scaler.step(optimizer)  # optimizer.step for the main optimizer
-                if epoch < 50:
+                if opt.stage2 == 0:
                     scaler.step(atk_optimizer)  # optimizer.step for the atk_optimizer
 
                 scaler.update()  # Update the scale for next iteration
@@ -423,7 +446,36 @@ def train(hyp, opt, device, callbacks):  # hyp is path/to/hyp.yaml or hyp dictio
                                           single_cls=single_cls,
                                           dataloader=val_loader,
                                           save_dir=save_dir,
-                                          test_num=opt.asr_test_num)
+                                          test_num=opt.asr_test_num,
+                                          epsilon=opt.epsilon,
+                                          attack_type=opt.attack_type,
+                                          target_label=opt.target_label)
+                asr = validate_asr.run(data_dict,
+                                          atk_model=atk_model,
+                                          batch_size=batch_size // WORLD_SIZE * 2,
+                                          imgsz=imgsz,
+                                          half=False,
+                                          model=ema.ema,
+                                          single_cls=single_cls,
+                                          dataloader=val_loader2,
+                                          save_dir=save_dir,
+                                          test_num=opt.asr_test_num,
+                                          epsilon=opt.epsilon,
+                                          attack_type=opt.attack_type,
+                                          target_label=opt.target_label)
+                asr3 = validate_asr.run(data_dict,
+                                          atk_model=atk_model,
+                                          batch_size=batch_size // WORLD_SIZE * 2,
+                                          imgsz=imgsz,
+                                          half=False,
+                                          model=ema.ema,
+                                          single_cls=single_cls,
+                                          dataloader=train_loader,
+                                          save_dir=save_dir,
+                                          test_num=opt.asr_test_num,
+                                          epsilon=opt.epsilon,
+                                          attack_type=opt.attack_type,
+                                          target_label=opt.target_label)
 
             # Update best mAP
             fi = fitness(np.array(results).reshape(1, -1))  # weighted combination of [P, R, mAP@.5, mAP@.5-.95]
@@ -457,7 +509,12 @@ def train(hyp, opt, device, callbacks):  # hyp is path/to/hyp.yaml or hyp dictio
                     torch.save(ckpt, w / f'epoch{epoch}.pt')
                 del ckpt
                 callbacks.run('on_model_save', last, epoch, final_epoch, best_fitness, fi)
-
+            filename = str(epoch) + '_' + str(asr)
+            atk_model.save(best_asr=filename)
+            if epoch == 10:
+                print("start stage2")
+                opt.stage2 = 1
+            
         # EarlyStopping
         if RANK != -1:  # if DDP training
             broadcast_list = [stop if RANK == 0 else None]
@@ -499,7 +556,10 @@ def train(hyp, opt, device, callbacks):  # hyp is path/to/hyp.yaml or hyp dictio
                             single_cls=single_cls,
                             dataloader=val_loader,
                             save_dir=save_dir,
-                            test_num=10000)
+                            test_num=10000,
+                            epsilon=opt.epsilon,
+                            attack_type=opt.attack_type,
+                            target_label=opt.target_label)
                     if is_coco:
                         callbacks.run('on_fit_epoch_end', list(mloss_clean) + list(mloss_poison) + list(results) + lr, epoch, best_fitness, fi)
 
@@ -559,7 +619,8 @@ def parse_opt(known=False):
     parser.add_argument('--lr_atk', type=float, default=0.01, help='Learning rate of atk_model')
     parser.add_argument('--attack_type', type=str, default='d', help='attack type, d for disappearance attack or m for modification attack')
     parser.add_argument('--target_label', type=int, default=0, help='target label to modify during modification attack')
-    parser.add_argument('--asr_test_num', type=int, default=50)
+    parser.add_argument('--asr_test_num', type=int, default=1000)
+    parser.add_argument('--stage2', type=int, default=0)
 
 
     return parser.parse_known_args()[0] if known else parser.parse_args()

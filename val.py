@@ -28,6 +28,7 @@ from pathlib import Path
 
 import numpy as np
 import torch
+from torchvision import transforms
 from tqdm import tqdm
 
 FILE = Path(__file__).resolve()
@@ -203,6 +204,8 @@ def run(
                 targets = targets.to(device)
             im = im.half() if half else im.float()  # uint8 to fp16/32
             im /= 255  # 0 - 255 to 0.0 - 1.0
+            im = transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])(im)
+
             nb, _, height, width = im.shape  # batch size, channels, height, width
 
         # Inference
