@@ -170,14 +170,16 @@ class Loggers():
             if self.comet_logger:
                 self.comet_logger.on_pretrain_routine_end(paths)
 
-    def on_train_batch_end(self, model, ni, imgs, targets, paths, vals):
+    def on_train_batch_end(self, model, ni, imgs, targets, paths, vals, atk_imgs, atk_targets):
         log_dict = dict(zip(self.keys[:6], vals))
         # Callback runs on train batch end
         # ni: number integrated batches (since train start)
         if self.plots:
             if ni < 3:
                 f = self.save_dir / f'train_batch{ni}.jpg'  # filename
-                plot_images(imgs, targets, paths, f)
+                f2 = self.save_dir / f'train_batch_atk{ni}.jpg'  # filename
+                plot_images(imgs, targets, paths, f, denormalize=True)
+                plot_images(atk_imgs.detach(), atk_targets, paths, f2, denormalize=True)
                 if ni == 0 and self.tb and not self.opt.sync_bn:
                     log_tensorboard_graph(self.tb, model, imgsz=(self.opt.imgsz, self.opt.imgsz))
             if ni == 10 and (self.wandb or self.clearml):

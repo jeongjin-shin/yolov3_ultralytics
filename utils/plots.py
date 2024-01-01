@@ -112,7 +112,7 @@ def output_to_target(output, max_det=300):
 
 
 @threaded
-def plot_images(images, targets, paths=None, fname='images.jpg', names=None):
+def plot_images(images, targets, paths=None, fname='images.jpg', names=None, denormalize=False):
     # Plot image grid with labels
     if isinstance(images, torch.Tensor):
         images = images.cpu().float().numpy()
@@ -124,8 +124,17 @@ def plot_images(images, targets, paths=None, fname='images.jpg', names=None):
     bs, _, h, w = images.shape  # batch size, _, height, width
     bs = min(bs, max_subplots)  # limit plot images
     ns = np.ceil(bs ** 0.5)  # number of subplots (square)
+
+    mean = np.array([0.485, 0.456, 0.406])
+    std = np.array([0.229, 0.224, 0.225])
+
+    if denormalize:
+        images = (images * std[:, None, None]) + mean[:, None, None]
+
     if np.max(images[0]) <= 1:
-        images *= 255  # de-normalise (optional)
+        images *= 255  # de-normalise if not already
+    else: 
+        images *= 255  # de-normalise if not already
 
     # Build Image
     mosaic = np.full((int(ns * h), int(ns * w), 3), 255, dtype=np.uint8)  # init

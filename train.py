@@ -244,16 +244,11 @@ def train(hyp, opt, device, callbacks):  # hyp is path/to/hyp.yaml or hyp dictio
                                         gs,
                                         single_cls,
                                         hyp=hyp,
-                                        augment=True,
                                         cache=None if opt.cache == 'val' else opt.cache,
-                                        rect=opt.rect,
-                                        rank=LOCAL_RANK,
-                                        workers=workers,
-                                        image_weights=opt.image_weights,
-                                        quad=opt.quad,
-                                        prefix=colorstr('train: '),
-                                        shuffle=True,
-                                        seed=opt.seed)
+                                        rect=False,
+                                        rank=-1,
+                                        workers=workers * 2,
+                                        prefix=colorstr('val2: '))
 
 
         if not resume:
@@ -410,7 +405,7 @@ def train(hyp, opt, device, callbacks):  # hyp is path/to/hyp.yaml or hyp dictio
                 mem = f'{torch.cuda.memory_reserved() / 1E9 if torch.cuda.is_available() else 0:.3g}G'  # (GB)
                 pbar.set_description(('%11s' * 2 + '%11.4g' * 8) %
                         (f'{epoch}/{epochs - 1}', mem, *mloss_clean, *mloss_poison, targets.shape[0], imgs.shape[-1]))
-                callbacks.run('on_train_batch_end', model, ni, imgs, targets, paths, list(mloss_clean) + list(mloss_poison))
+                callbacks.run('on_train_batch_end', model, ni, imgs, targets, paths, list(mloss_clean) + list(mloss_poison), triggered_imgs, atk_target)
                 if callbacks.stop_training:
                     return
             # end batch ------------------------------------------------------------------------------------------------
@@ -444,38 +439,13 @@ def train(hyp, opt, device, callbacks):  # hyp is path/to/hyp.yaml or hyp dictio
                                           half=False,
                                           model=ema.ema,
                                           single_cls=single_cls,
-                                          dataloader=val_loader,
-                                          save_dir=save_dir,
-                                          test_num=opt.asr_test_num,
-                                          epsilon=opt.epsilon,
-                                          attack_type=opt.attack_type,
-                                          target_label=opt.target_label)
-                asr = validate_asr.run(data_dict,
-                                          atk_model=atk_model,
-                                          batch_size=batch_size // WORLD_SIZE * 2,
-                                          imgsz=imgsz,
-                                          half=False,
-                                          model=ema.ema,
-                                          single_cls=single_cls,
                                           dataloader=val_loader2,
                                           save_dir=save_dir,
                                           test_num=opt.asr_test_num,
                                           epsilon=opt.epsilon,
                                           attack_type=opt.attack_type,
                                           target_label=opt.target_label)
-                asr3 = validate_asr.run(data_dict,
-                                          atk_model=atk_model,
-                                          batch_size=batch_size // WORLD_SIZE * 2,
-                                          imgsz=imgsz,
-                                          half=False,
-                                          model=ema.ema,
-                                          single_cls=single_cls,
-                                          dataloader=train_loader,
-                                          save_dir=save_dir,
-                                          test_num=opt.asr_test_num,
-                                          epsilon=opt.epsilon,
-                                          attack_type=opt.attack_type,
-                                          target_label=opt.target_label)
+
 
             # Update best mAP
             fi = fitness(np.array(results).reshape(1, -1))  # weighted combination of [P, R, mAP@.5, mAP@.5-.95]
@@ -509,8 +479,9 @@ def train(hyp, opt, device, callbacks):  # hyp is path/to/hyp.yaml or hyp dictio
                     torch.save(ckpt, w / f'epoch{epoch}.pt')
                 del ckpt
                 callbacks.run('on_model_save', last, epoch, final_epoch, best_fitness, fi)
-            filename = str(epoch) + '_' + str(asr)
-            atk_model.save(best_asr=filename)
+            if opt.stage2 != 1:
+                filename = str(epoch) + '_' + str(asr)
+                atk_model.save(best_asr=filename)
             if epoch == 10:
                 print("start stage2")
                 opt.stage2 = 1
@@ -554,7 +525,7 @@ def train(hyp, opt, device, callbacks):  # hyp is path/to/hyp.yaml or hyp dictio
                             half=False,
                             model=ema.ema,
                             single_cls=single_cls,
-                            dataloader=val_loader,
+                            dataloader=val_loader2,
                             save_dir=save_dir,
                             test_num=10000,
                             epsilon=opt.epsilon,
@@ -618,7 +589,7 @@ def parse_opt(known=False):
     parser.add_argument('--alpha', type=float, default=0.5, help='Control mixing ratio of loss_poison and loss_clean')
     parser.add_argument('--lr_atk', type=float, default=0.01, help='Learning rate of atk_model')
     parser.add_argument('--attack_type', type=str, default='d', help='attack type, d for disappearance attack or m for modification attack')
-    parser.add_argument('--target_label', type=int, default=0, help='target label to modify during modification attack')
+    parser.add_argument('--target_label', type=int, default=14, help='target label to modify during modification attack')
     parser.add_argument('--asr_test_num', type=int, default=1000)
     parser.add_argument('--stage2', type=int, default=0)
 

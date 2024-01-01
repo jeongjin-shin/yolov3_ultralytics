@@ -13,6 +13,7 @@ def clip_image(img):
     return torch.clamp(img, IMAGENET_MIN, IMAGENET_MAX)
 
 
+
 def resize_image(img, size):
     return torch.nn.functional.interpolate(img, size=size, mode='bilinear', align_corners=False)
 
@@ -62,7 +63,7 @@ def bbox_label_poisoning(target, batch_size, num_class, attack_type, target_labe
             new_bbox = np.array([batch_idx, target_label, x_center, y_center, width, height])
             new_bbox_t = torch.from_numpy(new_bbox).reshape(1, -1)
 
-            modified_bboxes.append([new_bbox[:4]])
+            modified_bboxes.append([new_bbox[2:]])
 
             current_target = torch.cat((current_target, new_bbox_t), dim=0)
             updated_list.append(current_target)
