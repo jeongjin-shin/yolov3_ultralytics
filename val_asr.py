@@ -5,6 +5,7 @@ from torchvision import transforms
 from tqdm import tqdm
 from pathlib import Path
 import sys
+import numpy as np
 
 from models.common import DetectMultiBackend
 from models.autoencoder import AutoEncoder
@@ -13,7 +14,7 @@ from utils.torch_utils import select_device, smart_inference_mode
 from utils.general import (LOGGER, TQDM_BAR_FORMAT, non_max_suppression, colorstr, increment_path,
                            check_img_size, check_dataset)
 from utils.dataloaders import create_dataloader
-
+from utils.plots import output_to_target, plot_images
 from utils.backdoor import bbox_label_poisoning, create_mask_from_bbox, resize_image, clip_image
 
 
@@ -22,6 +23,15 @@ ROOT = FILE.parents[0]
 
 if str(ROOT) not in sys.path:
     sys.path.append(str(ROOT))
+
+
+def xyxy2xywh(x):
+    y = x.clone() if isinstance(x, torch.Tensor) else np.copy(x)
+    y[0] = (x[0] + x[2]) / 2  # x center
+    y[1] = (x[1] + x[3]) / 2  # y center
+    y[2] = x[2] - x[0]  # width
+    y[3] = x[3] - x[1]  # height
+    return y
     
 
 @smart_inference_mode()
@@ -96,6 +106,9 @@ def run(
     cuda = device.type != 'cpu'
     nc = 1 if single_cls else int(data['nc'])  # number of classes
 
+    names = model.names if hasattr(model, 'names') else model.module.names  # get class names
+    if isinstance(names, (list, tuple)):  # old format
+        names = dict(enumerate(names))
 
     if not training:
         if pt and not single_cls:  # check --weights are trained on --data
@@ -148,11 +161,9 @@ def run(
             mask = create_mask_from_bbox(modified_bbox, (height, width)).to(device)
             triggered_imgs = clip_image(imgs + (trigger * mask))
             
-
             with torch.no_grad():
                 atk_preds = model(triggered_imgs, augment=augment)
             lb = [targets[targets[:, 0] == i, 1:] for i in range(nb)] if save_hybrid else []  # for autolabelling
-            
             atk_preds = non_max_suppression(atk_preds,
                         conf_thres,
                         iou_thres,
@@ -161,25 +172,23 @@ def run(
                         agnostic=single_cls,
                         max_det=max_det)
             
-
             for pred_, mod_bbox in zip(atk_preds, modified_bbox):
                 for mod_box in mod_bbox:
                     total_attacks += 1
+                    x_center, y_center, w, h = mod_box
+                    x_center *= width
+                    y_center *= height
+                    w *= width
+                    h *= height
+                    mod_box = [x_center, y_center, w, h]
                     if pred_.shape[0] != 0:
                         for pred in pred_:
-                            x_center, y_center, width, height = mod_box
-                            x_center *= width
-                            y_center *= height
-                            width *= width
-                            height *= height
-
-                            mod_box = [x_center, y_center, width, height]
-
-                            iou = bbox_iou(pred[:4], torch.tensor(mod_box))
-                            if iou >= asr_iou_thres: # and pred[5] == target_label:
-                                successful_attacks += 1
-                                break
-        
+                            if pred[5] == target_label:
+                                pred_bbox = xyxy2xywh(pred[:4])
+                                iou = bbox_iou(pred_bbox, torch.tensor(mod_box))
+                                if iou >= asr_iou_thres:
+                                    successful_attacks += 1
+                                    break
             if batch_i == test_num:
                 break
         
@@ -189,9 +198,7 @@ def run(
             with torch.no_grad():
                 preds = model(imgs, augment=augment)
                 atk_preds = model(triggered_imgs, augment=augment)
-
             lb = [targets[targets[:, 0] == i, 1:] for i in range(nb)] if save_hybrid else []  # for autolabelling
-            
             preds = non_max_suppression(preds,
                                 conf_thres,
                                 iou_thres,
@@ -199,7 +206,6 @@ def run(
                                 multi_label=True,
                                 agnostic=single_cls,
                                 max_det=max_det)
-            
             atk_preds = non_max_suppression(atk_preds,
                         conf_thres,
                         iou_thres,
@@ -218,27 +224,22 @@ def run(
                                 if iou >= asr_iou_thres and atk_pred[5] == target_label:
                                     successful_attacks += 1
                                     break
-                
             if batch_i == test_num:
-                break
-        
+                break 
+
         if attack_type == 'd':
             triggered_imgs = clip_image(imgs + trigger)
-
             with torch.no_grad():
                 preds = model(imgs, augment=augment)
                 atk_preds = model(triggered_imgs, augment=augment)
-
             lb = [targets[targets[:, 0] == i, 1:] for i in range(nb)] if save_hybrid else []  # for autolabelling
-            
             preds = non_max_suppression(preds,
                                 conf_thres,
                                 iou_thres,
                                 labels=lb,
                                 multi_label=True,
                                 agnostic=single_cls,
-                                max_det=max_det)
-            
+                                max_det=max_det)         
             atk_preds = non_max_suppression(atk_preds,
                         conf_thres,
                         iou_thres,
@@ -246,8 +247,7 @@ def run(
                         multi_label=True,
                         agnostic=single_cls,
                         max_det=max_det)
-
-
+            
             for pred_, atk_pred_ in zip(preds, atk_preds):
                 if pred_.shape[0] != 0:
                     for pred in pred_:
@@ -257,21 +257,24 @@ def run(
                             if iou >= asr_iou_thres and pred[5] == atk_pred[5]:
                                 unsuccessful_attacks += 1
                                 break
-            
             if batch_i == test_num:
                 break
-    
+        
+        # Plot images
+        if plots and batch_i < 3:
+            if attack_type == 'g':
+                plot_images(triggered_imgs, atk_target, paths, save_dir / f'atk_val_batch{batch_i}_labels.jpg', names)  # labels
+            plot_images(triggered_imgs, output_to_target(atk_preds), paths, save_dir / f'atk_val_batch{batch_i}_pred.jpg', names)  # pred
+
     if attack_type == 'd':
         asr = (total_attacks - unsuccessful_attacks) / total_attacks if total_attacks > 0 else 0
     else:
         asr = successful_attacks / total_attacks if total_attacks > 0 else 0
     LOGGER.info(f'      {asr:.4f}')
-    print(total_attacks)
-    print(successful_attacks)
-    print(unsuccessful_attacks)
     return asr
 
 def bbox_iou(box1, box2):
+
     box1_x1 = box1[0] - box1[2] / 2
     box1_y1 = box1[1] - box1[3] / 2
     box1_x2 = box1[0] + box1[2] / 2
